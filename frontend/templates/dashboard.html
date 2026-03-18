@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Affordability Dashboard</title>
+    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { background: #0f1117; color: #e0e0e0; font-family: 'Segoe UI', sans-serif; }
+
+        header {
+            background: #1a1d27;
+            padding: 24px 40px;
+            border-bottom: 1px solid #2a2d3a;
+        }
+        header h1 { font-size: 1.8rem; color: #ffffff; }
+        header p  { color: #888; margin-top: 4px; font-size: 0.9rem; }
+
+        .dashboard { padding: 32px 40px; max-width: 1600px; margin: 0 auto; }
+
+        .section {
+            background: #1a1d27;
+            border: 1px solid #2a2d3a;
+            border-radius: 12px;
+            padding: 24px;
+            margin-bottom: 32px;
+        }
+        .section h2 {
+            font-size: 1.1rem;
+            color: #a0a8c0;
+            margin-bottom: 16px;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+        }
+
+        .controls { display: flex; gap: 12px; align-items: center; margin-bottom: 16px; flex-wrap: wrap; }
+        .controls label { color: #888; font-size: 0.85rem; }
+        select, input[type=range] {
+            background: #252836;
+            border: 1px solid #3a3d4a;
+            color: #e0e0e0;
+            padding: 6px 12px;
+            border-radius: 6px;
+            font-size: 0.9rem;
+        }
+        input[type=range] { width: 200px; padding: 0; }
+
+        .top25-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.85rem;
+        }
+        th {
+            text-align: left;
+            padding: 10px 12px;
+            color: #888;
+            border-bottom: 1px solid #2a2d3a;
+            font-weight: 500;
+        }
+        td {
+            padding: 9px 12px;
+            border-bottom: 1px solid #1e2130;
+            color: #d0d0d0;
+        }
+        tr:hover td { background: #252836; }
+
+        .badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 0.8rem;
+            font-weight: 600;
+        }
+        .badge-green  { background: #1a3a1a; color: #4caf50; }
+        .badge-yellow { background: #3a3010; color: #ffc107; }
+        .badge-red    { background: #3a1010; color: #f44336; }
+
+        .forecast-controls { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
+        input[type=text] {
+            background: #252836;
+            border: 1px solid #3a3d4a;
+            color: #e0e0e0;
+            padding: 6px 12px;
+            border-radius: 6px;
+            font-size: 0.9rem;
+            width: 260px;
+        }
+        #county-suggestions {
+            background: #252836;
+            border: 1px solid #3a3d4a;
+            border-radius: 6px;
+            position: absolute;
+            z-index: 100;
+            max-height: 200px;
+            overflow-y: auto;
+            width: 260px;
+        }
+        #county-suggestions div {
+            padding: 8px 12px;
+            cursor: pointer;
+            font-size: 0.85rem;
+        }
+        #county-suggestions div:hover { background: #2e3148; }
+        .search-wrap { position: relative; }
+    </style>
+</head>
+<body>
+
+<header>
+    <h1>🏠 US Housing Affordability Dashboard</h1>
+    <p>County-level rent, income, and affordability trends · 2016–2028</p>
+</header>
+
+<div class="dashboard">
+
+    <!-- MAP -->
+    <div class="section">
+        <h2>County Rent-to-Income Ratio Map</h2>
+        <div class="controls">
+            <label>Year:
+                <select id="map-year"></select>
+            </label>
+            <label>Metric:
+                <select id="map-metric">
+                    <option value="rent_to_income_ratio">Rent to Income %</option>
+                    <option value="median_rent">Median Rent</option>
+                    <option value="median_income">Median Income</option>
+                    <option value="pct_severely_cost_burdened">% Severely Cost Burdened</option>
+                </select>
+            </label>
+        </div>
+        <div id="map" style="height:520px;"></div>
+    </div>
+
+    <!-- TOP 25 -->
+    <div class="section">
+        <h2>Most &amp; Least Expensive Counties (10-Year Average)</h2>
+        <div class="top25-grid">
+            <div>
+                <h3 style="color:#f44336;font-size:0.9rem;margin-bottom:12px;">▲ Most Expensive</h3>
+                <div id="table-most"></div>
+            </div>
+            <div>
+                <h3 style="color:#4caf50;font-size:0.9rem;margin-bottom:12px;">▼ Least Expensive</h3>
+                <div id="table-least"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- STATE TABLE -->
+    <div class="section">
+        <h2>State-Level Affordability Summary</h2>
+        <div id="table-states"></div>
+    </div>
+
+    <!-- FORECAST -->
+    <div class="section">
+        <h2>County Affordability Forecast (2024–2028)</h2>
+        <div class="forecast-controls">
+            <div class="search-wrap">
+                <input type="text" id="county-search" placeholder="Search for a county…" autocomplete="off">
+                <div id="county-suggestions"></div>
+            </div>
+        </div>
+        <div id="forecast-chart" style="height:420px;"></div>
+    </div>
+
+</div>
+
+<script>
+// ── Globals ──────────────────────────────────────
+let mapData = [], forecastData = [], top25Data = {}, stateData = [];
+
+const layout_base = {
+    paper_bgcolor: "#1a1d27",
+    plot_bgcolor:  "#1a1d27",
+    font:          { color: "#c0c0c0", size: 12 },
+    margin:        { t: 10, b: 10, l: 10, r: 10 },
+};
+const config = { displayModeBar: false, responsive: true };
+
+// ── Fetch all data ────────────────────────────────
+async function loadAll() {
+    const [map, top, states, forecast] = await Promise.all([
+        fetch("/api/map").then(r => r.json()),
+        fetch("/api/top25").then(r => r.json()),
+        fetch("/api/states").then(r => r.json()),
+        fetch("/api/forecast").then(r => r.json()),
+    ]);
+    mapData      = map;
+    top25Data    = top;
+    stateData    = states;
+    forecastData = forecast;
+
+    buildYearSelector();
+    renderMap();
+    renderTop25();
+    renderStateTable();
+    renderForecast();
+}
+
+// ── Map ───────────────────────────────────────────
+function buildYearSelector() {
+    const years = [...new Set(mapData.map(d => d.year))].sort();
+    const sel = document.getElementById("map-year");
+    years.forEach(y => {
+        const o = document.createElement("option");
+        o.value = y; o.text = y;
+        if (y === Math.max(...years)) o.selected = true;
+        sel.appendChild(o);
+    });
+    sel.addEventListener("change", renderMap);
+    document.getElementById("map-metric").addEventListener("change", renderMap);
+}
+
+function renderMap() {
+    const yr     = +document.getElementById("map-year").value;
+    const metric = document.getElementById("map-metric").value;
+    const sub    = mapData.filter(d => d.year === yr);
+
+    const labels = {
+        rent_to_income_ratio:     "Rent to Income %",
+        median_rent:              "Median Rent ($)",
+        median_income:            "Median Income ($)",
+        pct_severely_cost_burdened: "% Severely Cost Burdened",
+    };
+
+    const trace = {
+        type: "choropleth",
+        geojson: "https://raw.githubusercontent.com/plotly/datasets/master/geojson-counties-fips.json",
+        locations: sub.map(d => d.fips),
+        z:         sub.map(d => d[metric]),
+        text:      sub.map(d => `${d.county_name}<br>Rent: $${d.median_rent}<br>Income: $${d.median_income}<br>Ratio: ${d.rent_to_income_ratio}%`),
+        hoverinfo: "text",
+        colorscale: [
+            [0.0, "#006400"], [0.2, "#38a800"],
+            [0.4, "#ffff00"], [0.6, "#ff6600"],
+            [0.8, "#cc0000"], [1.0, "#4a0000"],
+        ],
+        colorbar: { title: labels[metric], tickfont: { color: "#c0c0c0" }, titlefont: { color: "#c0c0c0" } },
+        marker: { line: { color: "#1a1d27", width: 0.3 } },
+    };
+
+    Plotly.react("map", [trace], {
+        ...layout_base,
+        geo: {
+            scope: "usa",
+            bgcolor: "#1a1d27",
+            lakecolor: "#1a1d27",
+            landcolor: "#252836",
+            subunitcolor: "#2a2d3a",
+        },
+        margin: { t: 0, b: 0, l: 0, r: 0 },
+    }, config);
+}
+
+// ── Top 25 tables ─────────────────────────────────
+function ratioBadge(r) {
+    if (r < 20) return `<span class="badge badge-green">${r}%</span>`;
+    if (r < 30) return `<span class="badge badge-yellow">${r}%</span>`;
+    return `<span class="badge badge-red">${r}%</span>`;
+}
+
+function renderCountyTable(data, containerId) {
+    const rows = data.map(d => `
+        <tr>
+            <td>${d.county_name}</td>
+            <td>$${d.avg_rent.toLocaleString()}</td>
+            <td>$${d.avg_income.toLocaleString()}</td>
+            <td>${ratioBadge(d.avg_ratio)}</td>
+        </tr>`).join("");
+
+    document.getElementById(containerId).innerHTML = `
+        <table>
+            <thead><tr>
+                <th>County</th><th>Avg Rent</th><th>Avg Income</th><th>Ratio</th>
+            </tr></thead>
+            <tbody>${rows}</tbody>
+        </table>`;
+}
+
+function renderTop25() {
+    renderCountyTable(top25Data.most, "table-most");
+    renderCountyTable(top25Data.least, "table-least");
+}
+
+// ── State table ───────────────────────────────────
+function renderStateTable() {
+    const rows = stateData.map(d => `
+        <tr>
+            <td>${d.state_name}</td>
+            <td>${d.state_code}</td>
+            <td>$${d.avg_rent.toLocaleString()}</td>
+            <td>$${d.avg_income.toLocaleString()}</td>
+            <td>${ratioBadge(d.avg_ratio)}</td>
+            <td>${d.avg_cost_burdened}%</td>
+        </tr>`).join("");
+
+    document.getElementById("table-states").innerHTML = `
+        <table>
+            <thead><tr>
+                <th>State</th><th>Code</th><th>Avg Rent</th>
+                <th>Avg Income</th><th>Rent/Income</th><th>% Cost Burdened</th>
+            </tr></thead>
+            <tbody>${rows}</tbody>
+        </table>`;
+}
+
+// ── Forecast chart ────────────────────────────────
+function renderForecast(countyName = null) {
+    let counties = [...new Set(forecastData.map(d => d.county_name))].sort();
+    if (!countyName) countyName = counties[0];
+
+    const sub = forecastData.filter(d => d.county_name === countyName);
+    const trace = {
+        x: sub.map(d => d.year),
+        y: sub.map(d => d.predicted_ratio),
+        mode: "lines+markers",
+        name: countyName,
+        line: { color: "#4a9eff", width: 2 },
+        marker: { size: 6 },
+    };
+
+    Plotly.react("forecast-chart", [trace], {
+        ...layout_base,
+        xaxis: { title: "Year", gridcolor: "#2a2d3a" },
+        yaxis: { title: "Predicted Rent-to-Income %", gridcolor: "#2a2d3a" },
+        margin: { t: 20, b: 50, l: 60, r: 20 },
+    }, config);
+}
+
+// ── County search ─────────────────────────────────
+function setupSearch() {
+    const input = document.getElementById("county-search");
+    const box   = document.getElementById("county-suggestions");
+    const counties = [...new Set(forecastData.map(d => d.county_name))].sort();
+
+    input.addEventListener("input", () => {
+        const q = input.value.toLowerCase();
+        box.innerHTML = "";
+        if (!q) return;
+        counties.filter(c => c.toLowerCase().includes(q)).slice(0, 10).forEach(c => {
+            const div = document.createElement("div");
+            div.textContent = c;
+            div.addEventListener("click", () => {
+                input.value = c;
+                box.innerHTML = "";
+                renderForecast(c);
+            });
+            box.appendChild(div);
+        });
+    });
+
+    document.addEventListener("click", e => {
+        if (!input.contains(e.target)) box.innerHTML = "";
+    });
+}
+
+// ── Init ──────────────────────────────────────────
+loadAll().then(setupSearch);
+</script>
+</body>
+</html>
