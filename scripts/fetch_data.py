@@ -7,17 +7,19 @@ from datetime import datetime
 from dotenv import load_dotenv
 from pathlib import Path
 
-load_dotenv()
-env_path = Path(__file__).parent / ".env"
+env_path = Path(__file__).parent.parent / ".env"
 print(f"Looking for .env at: {env_path}")
 print(f"File exists: {env_path.exists()}")
 
 load_dotenv(env_path)
 print(f"BLS key: {os.getenv('BLS_API_KEY')}")
 print(f"Census key: {os.getenv('CENSUS_API_KEY')}")
+print(f"HUD key: {os.getenv('HUD_API_KEY')}")
+
 
 BLS_API_KEY = os.getenv("BLS_API_KEY")
 CENSUS_API_KEY = os.getenv("CENSUS_API_KEY")
+HUD_API_KEY = os.getenv("HUD_API_KEY")
 
 RAW_DATA_DIR = Path("data/raw")
 RAW_DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -124,24 +126,68 @@ def fetch_acs5_county(year: int) -> pd.DataFrame:
 
 
 #HUD data
-
 def fetch_hud_fmr() -> pd.DataFrame:
+    """Fetch FMR data via HUD's official API for all states/counties."""
+    if not HUD_API_KEY:
+        print("  HUD API key missing — skipping")
+        return pd.DataFrame()
+
+    headers = {"Authorization": f"Bearer {HUD_API_KEY}"}
     frames = []
-    for year in range(max(2015, START_YEAR), CURRENT_YEAR + 1):
-        for ext in ["xlsx", "xls"]:
-            url = f"https://www.huduser.gov/portal/datasets/fmr/fmr{year}/FY{year}_4050_FMRs.{ext}"
+
+    # Get state list once
+    try:
+        resp = requests.get(
+            "https://www.huduser.gov/hudapi/public/fmr/listStates",
+            headers=headers, timeout=30
+        )
+        resp.raise_for_status()
+        states = resp.json()
+        # Filter to only actual US states + DC (exclude territories)
+        states = [s for s in states if s["category"] == "State"]
+        print(f"  Found {len(states)} states")
+    except Exception as e:
+        print(f"  HUD API — could not fetch state list: {e}")
+        return pd.DataFrame()
+
+    for year in range(max(2017, START_YEAR), CURRENT_YEAR):
+        year_rows = []
+        for state in states:
+            state_code = state["state_code"]
             try:
-                resp = requests.get(url, timeout=30)
-                if resp.status_code == 200:
-                    df = pd.read_excel(pd.io.common.BytesIO(resp.content), dtype=str)
-                    df["year"] = year
-                    frames.append(df)
-                    print(f"  HUD FMR {year}: {len(df):,} areas")
-                    break
-            except Exception:
+                # Fetch FMR data for entire state at once
+                fmr_resp = requests.get(
+                    f"https://www.huduser.gov/hudapi/public/fmr/statedata/{state_code}",
+                    params={"year": year},
+                    headers=headers, timeout=30
+                )
+                if fmr_resp.status_code != 200:
+                    continue
+
+                fmr_raw = fmr_resp.json()
+                data = fmr_raw.get("data", {})
+                counties = data.get("metroareas", []) + data.get("counties", [])
+
+                for county in counties:
+                    year_rows.append({
+                        "fips":        county.get("fips_code", ""),
+                        "county_name": county.get("areaname", ""),
+                        "state_code":  state_code,
+                        "year":        year,
+                        "fmr_0br":     county.get("Efficiency"),
+                        "fmr_1br":     county.get("One-Bedroom"),
+                        "fmr_2br":     county.get("Two-Bedroom"),
+                        "fmr_3br":     county.get("Three-Bedroom"),
+                        "fmr_4br":     county.get("Four-Bedroom"),
+                    })
+                time.sleep(0.2)
+            except Exception as e:
+                print(f"    {state_code} {year}: skipped ({e})")
                 continue
-        else:
-            print(f"  HUD FMR {year}: skipped")
+
+        print(f"  HUD FMR {year}: {len(year_rows):,} areas")
+        frames.append(pd.DataFrame(year_rows))
+        time.sleep(0.3)
 
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
@@ -158,8 +204,9 @@ FRED_SERIES = {
 def fetch_fred_series(series_id: str, series_name: str) -> pd.DataFrame:
     url = f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_id}"
     try:
-        df = pd.read_csv(url, parse_dates=["DATE"])
+        df = pd.read_csv(url)
         df.columns = ["date", "value"]
+        df["date"] = pd.to_datetime(df["date"])
         df["series_id"] = series_id
         df["series_name"] = series_name
         df = df[df["date"].dt.year >= START_YEAR]
@@ -215,9 +262,13 @@ def main():
     # 4. FRED
     print("\n[4/4] FRED macro indicators …")
     fred_frames = [fetch_fred_series(sid, name) for sid, name in FRED_SERIES.items()]
-    fred_all = pd.concat([f for f in fred_frames if not f.empty], ignore_index=True)
-    fred_all.to_csv(RAW_DATA_DIR / "fred_macro.csv", index=False)
-    print(f"  Saved {len(fred_all):,} rows → fred_macro.csv")
+    fred_valid = [f for f in fred_frames if not f.empty]
+    if fred_valid:
+        fred_all = pd.concat(fred_valid, ignore_index=True)
+        fred_all.to_csv(RAW_DATA_DIR / "fred_macro.csv", index=False)
+        print(f"  Saved {len(fred_all):,} rows → fred_macro.csv")
+    else:
+        print("  No FRED data retrieved — skipping")
 
     print("\n✓ Done. Files saved to data/raw/")
 
